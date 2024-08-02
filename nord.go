@@ -11,21 +11,22 @@ import (
 	"time"
 )
 
+type NordConfig struct {
+	MaxFileSize uint
+}
+
 type Nord struct {
 	dirname      string
 	keyDir       KeyDir
 	activeFileId uint32
 	activeFile   *os.File
 	writePos     int
-	config       struct {
-		maxFileSize    uint
-		mergeThreshold uint
-	}
+	Config       NordConfig
 }
 
-func NewNord(dirname string) Nord {
+func NewNord(dirname string, config NordConfig) Nord {
 	nord := Nord{
-		dirname: dirname,
+		Config: config,
 	}
 	nord.Open(dirname)
 	return nord
@@ -39,14 +40,19 @@ type DataFileEntry struct {
 	Value     []byte
 }
 
+const (
+	DataFileEntryHdrLen = 12
+	HintFileEntryHdrLen = 16
+)
+
 func (df *DataFileEntry) Serialize() (int, []byte) {
-	n := 12 + len(df.Key) + len(df.Value)
+	n := DataFileEntryHdrLen + len(df.Key) + len(df.Value)
 	buf := make([]byte, n)
 	binary.LittleEndian.PutUint32(buf[0:], df.Timestamp)
 	binary.LittleEndian.PutUint32(buf[4:], df.Ksz)
 	binary.LittleEndian.PutUint32(buf[8:], df.Vsz)
-	copy(buf[12:], df.Key)
-	copy(buf[12+len(df.Key):], df.Value)
+	copy(buf[DataFileEntryHdrLen:], df.Key)
+	copy(buf[DataFileEntryHdrLen+len(df.Key):], df.Value)
 	return n, buf
 }
 
@@ -59,30 +65,28 @@ type HintFileEntry struct {
 }
 
 func (hf *HintFileEntry) Serialize() (int, []byte) {
-	n := 16 + len(hf.Key)
+	n := HintFileEntryHdrLen + len(hf.Key)
 	buf := make([]byte, n)
 	binary.LittleEndian.PutUint32(buf[0:], hf.Timestamp)
 	binary.LittleEndian.PutUint32(buf[4:], hf.Ksz)
 	binary.LittleEndian.PutUint32(buf[8:], hf.Vsz)
 	binary.LittleEndian.PutUint32(buf[12:], hf.ValPos)
-	copy(buf[16:], hf.Key)
+	copy(buf[HintFileEntryHdrLen:], hf.Key)
 	return n, buf
 }
 
 func (n *Nord) Open(dirname string) {
 	n.dirname = dirname
-	kd, err := BuildKeyDir(dirname)
+	kd, err := buildKeyDir(dirname)
 	if err != nil {
-		log.Printf("could not build key dir - %+v", err)
-		panic(err)
+		log.Panicf("could not build key dir - %+v", err)
 	}
 	n.keyDir = kd
 	n.activeFileId = uint32(time.Now().Unix())
 	filepath := path.Join(dirname, strconv.Itoa(int(n.activeFileId))+".data")
 	f, err := os.OpenFile(filepath, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644)
 	if err != nil {
-		log.Printf("could not create or open active file - %+v", err)
-		panic(err)
+		log.Panicf("could not create or open active file - %+v", err)
 	}
 	n.activeFile = f
 }
@@ -117,7 +121,14 @@ func (n *Nord) Put(key, val []byte) error {
 		Key:       key,
 		Value:     val,
 	}
-	_, buf := dfe.Serialize()
+	nbytes, buf := dfe.Serialize()
+	// if adding exceeds the max file size create new active file
+	if nbytes+n.writePos >= int(n.Config.MaxFileSize) {
+		err := n.updateActiveFile()
+		if err != nil {
+			return err
+		}
+	}
 	_, err := n.activeFile.Write(buf)
 	if err != nil {
 		return err
@@ -128,7 +139,7 @@ func (n *Nord) Put(key, val []byte) error {
 		ValuePos:  uint32(n.writePos),
 		Timestamp: uint32(time.Now().Unix()),
 	}
-	n.writePos += len(buf)
+	n.writePos += nbytes
 	return nil
 }
 
@@ -206,8 +217,6 @@ func (n *Nord) Merge() error {
 
 	newKeyDir := make(map[string]KeyDirEntry, len(n.keyDir))
 
-	log.Printf("files to merge: %+v", toMerge)
-
 	outfpath := path.Join(n.dirname, strconv.Itoa(int(mergefid)))
 	mergef, err := os.OpenFile(outfpath+".data", os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644)
 	if err != nil {
@@ -275,4 +284,21 @@ func (n *Nord) Sync() {
 
 func (n *Nord) Close() {
 	n.activeFile.Close()
+}
+
+func (n *Nord) updateActiveFile() error {
+	fid := uint32(time.Now().Unix())
+	fpath := path.Join(n.dirname, strconv.Itoa(int(fid))+".data")
+	err := n.activeFile.Close()
+	if err != nil {
+		return err
+	}
+	file, err := os.OpenFile(fpath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	n.activeFile = file
+	n.activeFileId = fid
+	n.writePos = 0
+	return nil
 }

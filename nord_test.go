@@ -8,7 +8,9 @@ import (
 
 func Test_Nord(t *testing.T) {
 	dirname := ".test_nord"
-	db := NewNord(dirname)
+	db := NewNord(dirname, NordConfig{
+		MaxFileSize: 128,
+	})
 
 	tests := []struct {
 		key []byte
@@ -24,7 +26,13 @@ func Test_Nord(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		if val, found := db.Get(test.key); !found || !bytes.Equal(val, test.val) {
+		val, found := db.Get(test.key)
+		if !found {
+			t.Logf("could not get key")
+			t.Fail()
+		}
+		if !bytes.Equal(val, test.val) {
+			t.Logf("invalid value. expected: %+v, got: %+v", test.val, val)
 			t.Fail()
 		}
 	}

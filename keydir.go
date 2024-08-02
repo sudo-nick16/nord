@@ -19,7 +19,13 @@ type KeyDirEntry struct {
 
 type KeyDir map[string]KeyDirEntry
 
-func BuildKeyDir(dirname string) (KeyDir, error) {
+func getFileInfo(fname string) (uint32, string) {
+	f := strings.Split(fname, ".")
+	id, _ := strconv.Atoi(f[0])
+	return uint32(id), f[1]
+}
+
+func buildKeyDir(dirname string) (KeyDir, error) {
 	keyDir := make(KeyDir, 0)
 
 	files, err := os.ReadDir(dirname)
@@ -35,49 +41,38 @@ func BuildKeyDir(dirname string) (KeyDir, error) {
 	}
 
 	sort.SliceStable(files, func(i, j int) bool {
-		t1, _ := strconv.Atoi(strings.Split(files[i].Name(), ".")[0])
-		t2, _ := strconv.Atoi(strings.Split(files[j].Name(), ".")[0])
-		return t1 < t2
+		iid, _ := getFileInfo(files[i].Name())
+		jid, _ := getFileInfo(files[j].Name())
+		return iid < jid
 	})
 
-	fileMap := make(map[string]bool, 0)
+	hintMap := make(map[uint32]bool, 0)
 
 	for _, file := range files {
-		f := strings.Split(file.Name(), ".")
-		fname := f[0]
-		ftype := f[1]
+		fid, ftype := getFileInfo(file.Name())
 		if ftype == "hint" {
-			fileMap[fname] = true
+			hintMap[uint32(fid)] = true
 		}
 	}
 
 	for _, file := range files {
-		f := strings.Split(file.Name(), ".")
-		if len(f) < 2 {
-			continue
+		fid, ftype := getFileInfo(file.Name())
+		if ftype == "hint" {
+			hintMap[uint32(fid)] = true
 		}
-		fname := f[0]
-		ftype := f[1]
-
 		if ftype == "hint" {
 			continue
 		}
-
-		fid, err := strconv.ParseUint(fname, 10, 32)
-		if err != nil {
-			return nil, err
-		}
-
-		if _, hasAdjHint := fileMap[fname]; hasAdjHint {
-			filepath := path.Join(dirname, fname+".hint")
+		if _, hasAdjHint := hintMap[fid]; hasAdjHint {
+			// process hint file
+			filepath := path.Join(dirname, strconv.Itoa(int(fid))+".hint")
 			readPos := 0
 			hf, err := os.OpenFile(filepath, os.O_RDONLY, 0644)
 			if err != nil {
 				panic(err)
 			}
-			// 4 + 4 + 4 + 4
 			for {
-				buf := make([]byte, 16)
+				buf := make([]byte, HintFileEntryHdrLen)
 				_, err = hf.ReadAt(buf, int64(readPos))
 				if err == io.EOF {
 					break
@@ -93,24 +88,23 @@ func BuildKeyDir(dirname string) (KeyDir, error) {
 				}
 				ksz := binary.LittleEndian.Uint32(buf[4:8])
 				kdkey := make([]byte, ksz)
-				_, err := hf.ReadAt(kdkey, int64(readPos)+16)
+				_, err := hf.ReadAt(kdkey, int64(readPos)+HintFileEntryHdrLen)
 				if err != nil {
 					return nil, err
 				}
 				keyDir[string(kdkey)] = kdval
-				readPos += 16 + int(ksz)
+				readPos += HintFileEntryHdrLen + int(ksz)
 			}
 		} else {
-			// data file
+			// process data file
 			filepath := path.Join(dirname, file.Name())
 			readPos := 0
 			hf, err := os.OpenFile(filepath, os.O_RDONLY, 0644)
 			if err != nil {
 				panic(err)
 			}
-			// 4 + 4 + 4
 			for {
-				buf := make([]byte, 12)
+				buf := make([]byte, DataFileEntryHdrLen)
 				_, err = hf.ReadAt(buf, int64(readPos))
 				if err != nil {
 					break
@@ -120,15 +114,15 @@ func BuildKeyDir(dirname string) (KeyDir, error) {
 					FileId:    uint32(fid),
 					Timestamp: binary.LittleEndian.Uint32(buf[0:4]),
 					ValueSz:   binary.LittleEndian.Uint32(buf[8:12]),
-					ValuePos:  uint32(readPos), // offset to the value
+					ValuePos:  uint32(readPos),
 				}
 				kdkey := make([]byte, ksz)
-				_, err := hf.ReadAt(kdkey, int64(readPos)+12)
+				_, err := hf.ReadAt(kdkey, int64(readPos)+DataFileEntryHdrLen)
 				if err != nil {
 					return nil, err
 				}
 				keyDir[string(kdkey)] = kdval
-				readPos += 12 + int(ksz+kdval.ValueSz)
+				readPos += DataFileEntryHdrLen + int(ksz+kdval.ValueSz)
 			}
 		}
 	}
