@@ -1,7 +1,8 @@
-package nord
+package bitcask
 
 import (
 	"encoding/binary"
+	"fmt"
 	"log"
 	"os"
 	"path"
@@ -11,25 +12,25 @@ import (
 	"time"
 )
 
-type NordConfig struct {
+type BitcaskConfig struct {
 	MaxFileSize uint
 }
 
-type Nord struct {
+type Bitcask struct {
 	dirname      string
 	keyDir       KeyDir
 	activeFileId uint32
 	activeFile   *os.File
 	writePos     int
-	Config       NordConfig
+	Config       BitcaskConfig
 }
 
-func NewNord(dirname string, config NordConfig) Nord {
-	nord := Nord{
+func NewBitcask(dirname string, config BitcaskConfig) Bitcask {
+	bitcask := Bitcask{
 		Config: config,
 	}
-	nord.Open(dirname)
-	return nord
+	bitcask.Open(dirname)
+	return bitcask
 }
 
 type DataFileEntry struct {
@@ -75,7 +76,7 @@ func (hf *HintFileEntry) Serialize() (int, []byte) {
 	return n, buf
 }
 
-func (n *Nord) Open(dirname string) {
+func (n *Bitcask) Open(dirname string) {
 	n.dirname = dirname
 	kd, err := buildKeyDir(dirname)
 	if err != nil {
@@ -91,27 +92,25 @@ func (n *Nord) Open(dirname string) {
 	n.activeFile = f
 }
 
-func (n *Nord) Get(key []byte) ([]byte, bool) {
+func (n *Bitcask) Get(key []byte) ([]byte, error) {
 	e, found := n.keyDir[string(key)]
 	if !found || e.ValueSz == 0 {
-		return []byte{}, false
+		return []byte{}, fmt.Errorf("get key: key not found")
 	}
 	filepath := path.Join(n.dirname, strconv.Itoa(int(e.FileId))+".data")
 	f, err := os.OpenFile(filepath, os.O_RDONLY, 0644)
 	if err != nil {
-		log.Printf("error: %+v", err)
-		return []byte{}, false
+		return []byte{}, fmt.Errorf("get key: could not open file - %+v", err)
 	}
 	val := make([]byte, e.ValueSz)
 	_, err = f.ReadAt(val, int64(e.ValuePos)+12+int64(len(key)))
 	if err != nil {
-		log.Printf("error: %+v", err)
-		return []byte{}, false
+		return []byte{}, fmt.Errorf("get key: could not read file - %+v", err)
 	}
-	return val, true
+	return val, nil
 }
 
-func (n *Nord) Put(key, val []byte) error {
+func (n *Bitcask) Put(key, val []byte) error {
 	ksz := len(key)
 	vsz := len(val)
 	dfe := DataFileEntry{
@@ -143,17 +142,18 @@ func (n *Nord) Put(key, val []byte) error {
 	return nil
 }
 
-func (n *Nord) Delete(key []byte) {
+func (n *Bitcask) Delete(key []byte) error {
 	e, found := n.keyDir[string(key)]
 	if !found || e.ValueSz == 0 {
-		return
+		return fmt.Errorf("delete key: key does not exist")
 	}
 	n.keyDir[string(key)] = KeyDirEntry{
 		ValueSz: 0,
 	}
+	return nil
 }
 
-func (n *Nord) ListKeys() []string {
+func (n *Bitcask) ListKeys() []string {
 	keys := make([]string, len(n.keyDir))
 	for key := range n.keyDir {
 		keys = append(keys, key)
@@ -161,11 +161,11 @@ func (n *Nord) ListKeys() []string {
 	return keys
 }
 
-func (n *Nord) Fold(dirname string) {
+func (n *Bitcask) Fold(dirname string) {
 	panic("not implemented")
 }
 
-func (n *Nord) Merge() error {
+func (n *Bitcask) Merge() error {
 	files, err := os.ReadDir(n.dirname)
 	if err != nil {
 		return err
@@ -268,6 +268,9 @@ func (n *Nord) Merge() error {
 			writePos += 12 + len(key) + int(kdval.ValueSz)
 		}
 	}
+	for key, val := range newKeyDir {
+		n.keyDir[key] = val
+	}
 	for file := range toMerge {
 		fpath := path.Join(n.dirname, strconv.Itoa(int(file))+".data")
 		err := os.Remove(fpath)
@@ -278,15 +281,15 @@ func (n *Nord) Merge() error {
 	return nil
 }
 
-func (n *Nord) Sync() {
+func (n *Bitcask) Sync() {
 	panic("not implemented")
 }
 
-func (n *Nord) Close() {
+func (n *Bitcask) Close() {
 	n.activeFile.Close()
 }
 
-func (n *Nord) updateActiveFile() error {
+func (n *Bitcask) updateActiveFile() error {
 	fid := uint32(time.Now().Unix())
 	fpath := path.Join(n.dirname, strconv.Itoa(int(fid))+".data")
 	err := n.activeFile.Close()

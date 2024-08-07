@@ -1,4 +1,4 @@
-package nord
+package bitcask
 
 import (
 	"encoding/binary"

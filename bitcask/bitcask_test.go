@@ -1,4 +1,4 @@
-package nord
+package bitcask
 
 import (
 	"bytes"
@@ -26,9 +26,9 @@ func Test_Nord(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		val, found := db.Get(test.key)
-		if !found {
-			t.Logf("could not get key")
+		val, err := db.Get(test.key)
+		if err != nil {
+			t.Logf("get key: %+v", err)
 			t.Fail()
 		}
 		if !bytes.Equal(val, test.val) {
